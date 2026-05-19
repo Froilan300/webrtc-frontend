@@ -2,11 +2,12 @@ import { useEffect, useRef } from 'react'
 import { useRobotStore } from '../stores/useRobotStore'
 import { useMapStore } from '../stores/useMapStore'
 
-const SIZE  = 420
+const W     = 420
+const H     = 215
 const SCALE = 20
 
 function toCanvas(wx, wy) {
-  return { px: SIZE / 2 + wx * SCALE, py: SIZE / 2 - wy * SCALE }
+  return { px: W / 2 + wx * SCALE, py: H / 2 - wy * SCALE }
 }
 
 export function MapView() {
@@ -20,13 +21,15 @@ export function MapView() {
     const ctx = canvas.getContext('2d')
 
     ctx.fillStyle = '#111827'
-    ctx.fillRect(0, 0, SIZE, SIZE)
+    ctx.fillRect(0, 0, W, H)
 
     ctx.strokeStyle = '#1e293b'
     ctx.lineWidth = 1
-    for (let i = 0; i <= SIZE; i += SCALE) {
-      ctx.beginPath(); ctx.moveTo(i, 0);    ctx.lineTo(i, SIZE);  ctx.stroke()
-      ctx.beginPath(); ctx.moveTo(0, i);    ctx.lineTo(SIZE, i);  ctx.stroke()
+    for (let i = 0; i <= W; i += SCALE) {
+      ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, H); ctx.stroke()
+    }
+    for (let i = 0; i <= H; i += SCALE) {
+      ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(W, i); ctx.stroke()
     }
 
     if (activeRoute && activeRoute.waypoints.length > 1) {
@@ -49,11 +52,17 @@ export function MapView() {
 
     waypoints.forEach((wp, idx) => {
       const { px, py } = toCanvas(wp.position.x, wp.position.y)
-      ctx.fillStyle   = '#f59e0b'
+      const prev = idx === 0
+        ? { x: position.x, y: position.y }
+        : waypoints[idx - 1].position
+      const dist = Math.sqrt(
+        (wp.position.x - prev.x) ** 2 + (wp.position.y - prev.y) ** 2
+      )
+      ctx.fillStyle = '#f59e0b'
       ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.fill()
-      ctx.fillStyle   = '#fff'
-      ctx.font        = '10px monospace'
-      ctx.fillText(wp.label || `WP${idx + 1}`, px + 8, py + 4)
+      ctx.fillStyle = '#fff'
+      ctx.font      = '10px monospace'
+      ctx.fillText(`${wp.label || `WP${idx + 1}`} (${dist.toFixed(1)}m)`, px + 8, py + 4)
     })
 
     const { px: rx, py: ry } = toCanvas(position.x, position.y)
@@ -74,29 +83,28 @@ export function MapView() {
   }, [position, waypoints, activeRoute])
 
   const handleClick = (e) => {
-    const rect  = canvasRef.current.getBoundingClientRect()
-    const scaleX = SIZE / rect.width
-    const scaleY = SIZE / rect.height
+    const rect   = canvasRef.current.getBoundingClientRect()
+    const scaleX = W / rect.width
+    const scaleY = H / rect.height
     const px = (e.clientX - rect.left) * scaleX
     const py = (e.clientY - rect.top)  * scaleY
-    const wx = (px - SIZE / 2) / SCALE
-    const wy = -(py - SIZE / 2) / SCALE
+    const wx = (px - W / 2) / SCALE
+    const wy = -(py - H / 2) / SCALE
 
     const { waypoints, addWaypoint } = useMapStore.getState()
-    const wp = {
+    addWaypoint({
       id:       crypto.randomUUID(),
       label:    `WP${waypoints.length + 1}`,
       position: { x: wx, y: wy },
-    }
-    addWaypoint(wp)
+    })
   }
 
   return (
     <div className="space-y-1">
       <canvas
         ref={canvasRef}
-        width={SIZE}
-        height={SIZE}
+        width={W}
+        height={H}
         onClick={handleClick}
         className="rounded-lg border border-gray-700 cursor-crosshair w-full"
       />

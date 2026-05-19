@@ -37,7 +37,7 @@ export default function App() {
 
         {/* Columna derecha — Mapa + Patrulla */}
         <div className="col-span-7 flex flex-col gap-3">
-          <section className="bg-gray-900 rounded-lg p-3 border border-gray-800 flex-1">
+          <section className="bg-gray-900 rounded-lg p-3 border border-gray-800">
             <h2 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-3">
               Mapa SLAM
             </h2>

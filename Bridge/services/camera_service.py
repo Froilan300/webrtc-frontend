@@ -18,11 +18,11 @@ class CameraService:
         self._queue: Queue = Queue(maxsize=2)
         self.is_streaming = False
         self._track_cb_registered = False
+        self._last_frame = None
 
         blank = np.zeros((480, 640, 3), dtype=np.uint8)
         cv2.putText(blank, "Sin señal de camara", (130, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (80, 80, 80), 2)
-
-        
+        self._blank = blank
 
     async def start(self):
         if not self.sdk.is_connected:
@@ -40,23 +40,30 @@ class CameraService:
         self.is_streaming = False
 
     async def _recv(self, track: MediaStreamTrack):
+        logger.info("CameraService._recv iniciado — recibiendo frames")
         while self.is_streaming:
             try:
                 frame = await track.recv()
                 img = frame.to_ndarray(format="bgr24")
+                self._last_frame = img
                 if self._queue.full():
                     self._queue.get_nowait()
                 self._queue.put_nowait(img)
             except Exception as e:
                 logger.error(f"CameraService._recv error: {e}")
                 break
+        logger.info("CameraService._recv terminado")
 
     async def mjpeg_stream(self) -> AsyncIterator[bytes]:
         while True:
             try:
                 img = self._queue.get_nowait()
             except Empty:
-                img = self._blank
-            _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
+                img = self._last_frame if self._last_frame is not None else self._blank
+            try:
+                success, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                if success:
+                    yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
+            except Exception as e:
+                logger.error(f"mjpeg_stream encode error: {e}")
             await asyncio.sleep(0.033)

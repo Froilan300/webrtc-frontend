@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import math
+import time
 from typing import Callable, Optional
 
 from unitree_webrtc_connect.webrtc_driver import UnitreeWebRTCConnection, WebRTCConnectionMethod
@@ -14,8 +16,12 @@ class SDKService:
         self.conn: Optional[UnitreeWebRTCConnection] = None
         self.is_connected = False
         self.position: dict = {"x": 0.0, "y": 0.0, "heading": 0.0}
+        self.heading: float = 0.0  # actualizado desde lowstate (IMU real)
         self._broadcast: Optional[Callable] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._last_telemetry_t: float = 0.0
+        self._last_battery_t: float = 0.0
+        self._last_status_t: float = 0.0     # log de estado cada 30 s
 
     def set_broadcast(self, fn: Callable):
         self._broadcast = fn
@@ -77,8 +83,39 @@ class SDKService:
         if state is None:
             return
 
-        bms = state.get("bms_state", {}) if isinstance(state, dict) else {}
-        self._emit({"type": "BATTERY", "data": {"level": bms.get("soc", 0)}})
+        imu = state.get("imu_state")
+        if isinstance(imu, dict):
+            rpy = imu.get("rpy", [])
+            if len(rpy) > 2:
+                self.heading = rpy[2]
+
+        now = time.monotonic()
+
+        # Enviar heading real al canvas a 10 Hz (lowstate llega a ~500 Hz)
+        if now - self._last_telemetry_t >= 0.1:
+            self._last_telemetry_t = now
+            self.position["heading"] = self.heading
+            self._emit({"type": "TELEMETRY", "data": {"position": self.position, "mode": 0, "gait": 0}})
+
+        # Batería cada 5 s es suficiente
+        if now - self._last_battery_t >= 5.0:
+            self._last_battery_t = now
+            bms = state.get("bms_state", {}) if isinstance(state, dict) else {}
+            self._emit({"type": "BATTERY", "data": {"level": bms.get("soc", 0)}})
+
+        # Log de estado cada 30 s (temperatura motores, batería, heading)
+        if now - self._last_status_t >= 30.0:
+            self._last_status_t = now
+            bms  = state.get("bms_state", {}) if isinstance(state, dict) else {}
+            mots = state.get("motor_state", []) if isinstance(state, dict) else []
+            temps = [m.get("temperature", 0) for m in mots[:12] if isinstance(m, dict)]
+            rpy  = (imu.get("rpy", [0, 0, 0]) if isinstance(imu, dict) else [0, 0, 0])
+            logger.info(
+                f"[STATUS] Batería={bms.get('soc', '?')}% | "
+                f"Voltaje={state.get('power_v', '?'):.1f}V | "
+                f"Heading={math.degrees(rpy[2] if len(rpy) > 2 else 0):.1f}° | "
+                f"Temp motores={temps}"
+            )
 
     def _emit(self, msg: dict):
         if self._broadcast and self._loop and self._loop.is_running():

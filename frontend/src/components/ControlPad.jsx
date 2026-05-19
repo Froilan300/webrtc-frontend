@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ws } from '../services/websocketService'
 
-const SPEED = 0.5
-const TURN  = 0.5
+const SPEED = 0.6
+const TURN  = 0.9
 const ZERO  = { x: 0, y: 0, z: 0 }
 
 function DPadBtn({ label, vec, onDown, onUp }) {

@@ -13,8 +13,23 @@ from services.audio_service import AudioService
 from services.map_service import MapService
 from services.patrol_service import PatrolService
 
+class _SDKFilter(logging.Filter):
+    """Bloquea los mensajes ruidosos del SDK de Unitree (lowstate 500Hz, heartbeat, RTC)."""
+    _BLOCKED = (
+        "message sent", "Received message on data channel",
+        "Heartbeat", "Network status", "rtt_probe", "lowstate",
+        "aiortc", "aioice",
+    )
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(b in msg for b in self._BLOCKED)
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logging.getLogger().handlers[0].addFilter(_SDKFilter())
 logger = logging.getLogger(__name__)
+
+for _noisy in ("unitree_webrtc_connect", "aioice", "aiortc", "aiortc.rtp"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 # --- Servicios ---
 sdk = SDKService()
@@ -44,6 +59,9 @@ async def lifespan(app: FastAPI):
     await sdk.connect()
     if sdk.is_connected:
         await camera.start()
+        n = await audio.clear_all_files()
+        if n:
+            logger.info(f"Limpieza inicial: {n} archivo(s) de audio borrado(s) del robot")
     yield
     await sdk.disconnect()
 
@@ -162,6 +180,17 @@ async def save_route(body: dict):
 @app.delete("/api/routes/{route_id}")
 async def delete_route(route_id: str):
     return {"deleted": maps.delete_route(route_id)}
+
+
+@app.get("/api/audio/files")
+async def list_audio_files():
+    return {"files": await audio.list_files()}
+
+
+@app.delete("/api/audio/files")
+async def clear_audio_files():
+    n = await audio.clear_all_files()
+    return {"deleted": n}
 
 
 if __name__ == "__main__":
