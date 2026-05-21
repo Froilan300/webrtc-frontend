@@ -59,9 +59,7 @@ async def lifespan(app: FastAPI):
     await sdk.connect()
     if sdk.is_connected:
         await camera.start()
-        n = await audio.clear_all_files()
-        if n:
-            logger.info(f"Limpieza inicial: {n} archivo(s) de audio borrado(s) del robot")
+        await audio.setup_live_audio()
     yield
     await sdk.disconnect()
 
@@ -125,10 +123,10 @@ async def _handle(msg: dict):
     elif cmd == "STOP_PATROL":
         await patrol.stop()
         await broadcast({"type": "PATROL_STATUS", "data": {"status": "STOPPED", "progress": 0}})
-    elif cmd == "AUDIO_START":
-        await audio.start()
-    elif cmd == "AUDIO_STOP":
-        await audio.stop()
+    elif cmd == "CALL_START":
+        await audio.start_call()
+    elif cmd == "CALL_STOP":
+        await audio.stop_call()
     elif cmd == "SET_VOLUME":
         await audio.set_volume(payload.get("level", 50))
 
@@ -182,15 +180,6 @@ async def delete_route(route_id: str):
     return {"deleted": maps.delete_route(route_id)}
 
 
-@app.get("/api/audio/files")
-async def list_audio_files():
-    return {"files": await audio.list_files()}
-
-
-@app.delete("/api/audio/files")
-async def clear_audio_files():
-    n = await audio.clear_all_files()
-    return {"deleted": n}
 
 
 if __name__ == "__main__":

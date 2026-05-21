@@ -1,210 +1,327 @@
 import asyncio
 import base64
-import hashlib
+import fractions
+import io
 import json
 import logging
-import os
-import tempfile
-import time
+import queue
 import wave
 from typing import Optional
 
 import numpy as np
 import sounddevice as sd
+from aiortc import AudioStreamTrack
+from av import AudioFrame
 
-from unitree_webrtc_connect.constants import AUDIO_API, RTC_TOPIC
+from unitree_webrtc_connect.constants import AUDIO_API, DATA_CHANNEL_TYPE, RTC_TOPIC
 from .sdk_service import SDKService
 
 logger = logging.getLogger(__name__)
 
-SAMPLE_RATE = 44100
-CHANNELS    = 1
-CHUNK_SIZE  = 4096
-CHUNK_SLEEP = 0.05
+# WebRTC audio (robot → PC speaker)
+SAMPLE_RATE = 48000
+CHANNELS    = 2
+BLOCK_SIZE  = 960     # 20 ms @ 48 kHz
+
+# Data-channel audio (PC mic → robot speaker)
+MIC_RATE  = 16000     # Hz
+MIC_CH    = 1         # mono
+MIC_BLOCK = 1280      # 80 ms @ 16 kHz → ~3.5 kB base64 → always 1 sub-chunk
 
 
-class AudioService:
-    def __init__(self, sdk: SDKService):
-        self.sdk = sdk
-        self.is_active  = False
-        self._frames: list = []
-        self._recording    = False
-        self._stream: Optional[sd.InputStream] = None
+class _MicTrack(AudioStreamTrack):
+    """Pista silenciosa — mantiene el transceiver WebRTC en sendrecv."""
 
-    async def start(self):
-        if not self.sdk.is_connected or self._recording:
-            return
-        self._frames    = []
-        self._recording = True
+    kind = "audio"
+
+    def __init__(self):
+        super().__init__()
+        self._pts = 0
+
+    async def recv(self) -> AudioFrame:
+        await asyncio.sleep(0.02)
+        frame = AudioFrame(format='s16', layout='stereo')
+        frame.samples     = BLOCK_SIZE
+        frame.sample_rate = SAMPLE_RATE
+        frame.pts         = self._pts
+        frame.time_base   = fractions.Fraction(1, SAMPLE_RATE)
+        self._pts        += BLOCK_SIZE
+        frame.planes[0].update(bytes(BLOCK_SIZE * CHANNELS * 2))
+        return frame
+
+
+class _Speaker:
+    """Reproduce en los altavoces del PC el audio que llega del robot por WebRTC."""
+
+    def __init__(self):
+        self._buf: queue.Queue = queue.Queue(maxsize=50)
+        self._stream: Optional[sd.OutputStream] = None
+
+    def start(self):
         try:
-            self._stream = sd.InputStream(
+            self._stream = sd.OutputStream(
                 samplerate=SAMPLE_RATE,
                 channels=CHANNELS,
                 dtype='int16',
-                blocksize=1024,
-                callback=self._mic_callback,
+                blocksize=BLOCK_SIZE,
+                callback=self._cb,
             )
             self._stream.start()
-            self.is_active = True
-            logger.info("Captura de micrófono iniciada")
+            logger.info("Altavoz del PC abierto")
         except Exception as e:
-            logger.error(f"AudioService.start error: {e}")
-            self._recording = False
+            logger.error(f"Error abriendo altavoz: {e}")
 
-    def _mic_callback(self, indata, frames, time_info, status):
-        if self._recording:
-            self._frames.append(indata.copy())
-
-    async def stop(self):
-        if not self._recording:
-            return
-        self._recording = False
+    def stop(self):
         if self._stream:
             self._stream.stop()
             self._stream.close()
             self._stream = None
-        self.is_active = False
+        while not self._buf.empty():
+            try:
+                self._buf.get_nowait()
+            except queue.Empty:
+                break
 
-        if not self._frames or not self.sdk.is_connected:
-            self._frames = []
-            return
-
-        file_name = f"ptt_{int(time.time())}"
-        tmp_path   = os.path.join(tempfile.gettempdir(), f"{file_name}.wav")
-
+    def _cb(self, outdata, frames, *_):
         try:
-            audio_data = np.concatenate(self._frames, axis=0)
-            self._frames = []
-            dur_s = len(audio_data) / SAMPLE_RATE
-            logger.info(f"Grabados {dur_s:.1f}s — subiendo al robot")
+            data = self._buf.get_nowait()
+            n = min(frames, len(data))
+            outdata[:n] = data[:n]
+            if n < frames:
+                outdata[n:] = 0
+        except queue.Empty:
+            outdata[:] = 0
 
-            with wave.open(tmp_path, 'wb') as wf:
-                wf.setnchannels(CHANNELS)
-                wf.setsampwidth(2)
-                wf.setframerate(SAMPLE_RATE)
-                wf.writeframes(audio_data.tobytes())
+    def feed(self, data: np.ndarray):
+        if not self._buf.full():
+            self._buf.put_nowait(data)
 
-            uuid = await self._upload_wav(tmp_path, file_name)
-            if uuid is None:
-                logger.warning("No se encontró UUID tras la subida — abortando reproducción")
-                return
 
-            # Play once and stop (don't loop through other files on the robot)
-            await self.sdk.conn.datachannel.pub_sub.publish_request_new(
-                "rt/api/audiohub/request",
-                {"api_id": AUDIO_API["SET_PLAY_MODE"], "parameter": json.dumps({"play_mode": "no_cycle"})},
-            )
+class _MegaphoneStreamer:
+    """Captura el micrófono del PC y lo envía al altavoz del robot via UPLOAD_MEGAPHONE."""
 
-            logger.info(f"Reproduciendo en robot (id={uuid})")
-            await self.sdk.conn.datachannel.pub_sub.publish_request_new(
-                "rt/api/audiohub/request",
-                {
-                    "api_id": AUDIO_API["SELECT_START_PLAY"],
-                    "parameter": json.dumps({"unique_id": uuid}),
-                },
-            )
-            logger.info("Audio enviado al altavoz del robot")
-            asyncio.create_task(self._cleanup_after(uuid, dur_s + 5.0))
+    RATE  = MIC_RATE
+    CH    = MIC_CH
+    BLOCK = MIC_BLOCK
 
-        except Exception as e:
-            logger.error(f"AudioService.stop error: {e}")
-            self._frames = []
-        finally:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+    def __init__(self, sdk: SDKService):
+        self._sdk    = sdk
+        self._stream: Optional[sd.InputStream] = None
+        self._task:   Optional[asyncio.Task]   = None
+        self._q:      queue.Queue              = queue.Queue(maxsize=50)
+        self._active = False
+        self._sent   = 0
 
-    async def _upload_wav(self, wav_path: str, file_name: str) -> Optional[str]:
-        with open(wav_path, 'rb') as f:
-            audio_data = f.read()
-
-        file_md5 = hashlib.md5(audio_data).hexdigest()
-        b64      = base64.b64encode(audio_data).decode('utf-8')
-        chunks   = [b64[i:i + CHUNK_SIZE] for i in range(0, len(b64), CHUNK_SIZE)]
-        total    = len(chunks)
-
-        logger.info(f"Subiendo {total} chunks ({len(audio_data)} bytes)")
-
-        for i, chunk in enumerate(chunks, 1):
-            await self.sdk.conn.datachannel.pub_sub.publish_request_new(
-                "rt/api/audiohub/request",
-                {
-                    "api_id": AUDIO_API["UPLOAD_AUDIO_FILE"],
-                    "parameter": json.dumps({
-                        "file_name":            file_name,
-                        "file_type":            "wav",
-                        "file_size":            len(audio_data),
-                        "current_block_index":  i,
-                        "total_block_number":   total,
-                        "block_content":        chunk,
-                        "current_block_size":   len(chunk),
-                        "file_md5":             file_md5,
-                        "create_time":          int(time.time() * 1000),
-                    }, ensure_ascii=True),
-                },
-            )
-            await asyncio.sleep(CHUNK_SLEEP)
-
-        # Retrieve the UUID the robot assigned to the file
-        response = await self.sdk.conn.datachannel.pub_sub.publish_request_new(
-            "rt/api/audiohub/request",
-            {"api_id": AUDIO_API["GET_AUDIO_LIST"], "parameter": json.dumps({})},
+    async def start(self):
+        self._active = True
+        self._sent   = 0
+        self._stream = sd.InputStream(
+            samplerate=self.RATE,
+            channels=self.CH,
+            dtype='int16',
+            blocksize=self.BLOCK,
+            callback=self._cb,
         )
-        try:
-            data_str   = response.get('data', {}).get('data', '{}')
-            audio_list = json.loads(data_str).get('audio_list', [])
-            audio      = next((a for a in audio_list if a.get('CUSTOM_NAME') == file_name), None)
-            return audio.get('UNIQUE_ID') if audio else None
-        except Exception as e:
-            logger.error(f"Error buscando UUID: {e}")
-            return None
+        self._stream.start()
+        self._task = asyncio.ensure_future(self._loop())
+        logger.info("MegaphoneStreamer iniciado (mic PC → robot via data channel, 16 kHz mono)")
 
-    async def _cleanup_after(self, uuid: str, delay: float):
-        await asyncio.sleep(delay)
+    async def stop(self):
+        self._active = False
+        if self._stream:
+            self._stream.stop()
+            self._stream.close()
+            self._stream = None
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        logger.info(f"MegaphoneStreamer parado ({self._sent} chunks enviados)")
+
+    def _cb(self, indata, *_):
+        if not self._q.full():
+            self._q.put_nowait(indata.copy())
+
+    @staticmethod
+    def _make_wav(raw: bytes) -> bytes:
+        buf = io.BytesIO()
+        with wave.open(buf, 'wb') as w:
+            w.setnchannels(MIC_CH)
+            w.setsampwidth(2)
+            w.setframerate(MIC_RATE)
+            w.writeframes(raw)
+        return buf.getvalue()
+
+    async def _loop(self):
+        while self._active:
+            try:
+                data = self._q.get_nowait()
+            except queue.Empty:
+                await asyncio.sleep(0.01)
+                continue
+
+            try:
+                b64 = base64.b64encode(self._make_wav(data.tobytes())).decode()
+                sub_chunks = [b64[i:i + 4096] for i in range(0, len(b64), 4096)]
+                total = len(sub_chunks)
+
+                for idx, chunk in enumerate(sub_chunks, 1):
+                    self._sdk.conn.datachannel.pub_sub.publish_without_callback(
+                        topic="rt/api/audiohub/request",
+                        data={
+                            "header": {
+                                "identity": {
+                                    "id":     self._sent * 100 + idx,
+                                    "api_id": AUDIO_API["UPLOAD_MEGAPHONE"],
+                                }
+                            },
+                            "parameter": json.dumps({
+                                "current_block_size": len(chunk),
+                                "block_content":       chunk,
+                                "current_block_index": idx,
+                                "total_block_number":  total,
+                            }),
+                        },
+                        msg_type=DATA_CHANNEL_TYPE["REQUEST"],
+                    )
+
+                self._sent += 1
+                if self._sent <= 3:
+                    logger.info(
+                        f"Megaphone chunk #{self._sent}: {len(b64)} bytes base64, "
+                        f"{total} sub-chunk(s)"
+                    )
+
+            except Exception as e:
+                logger.error(f"MegaphoneStreamer: {e}", exc_info=True)
+
+
+class AudioService:
+    def __init__(self, sdk: SDKService):
+        self.sdk          = sdk
+        self.is_active    = False
+        self._call_active = False
+        self._mic_track:  Optional[_MicTrack]         = None
+        self._speaker:    Optional[_Speaker]           = None
+        self._mega:       Optional[_MegaphoneStreamer] = None
+        self._frame_logged = False
+
+    # ── Configuración inicial (llamar una vez tras conectar) ──────────────
+
+    async def setup_live_audio(self):
+        """Inyecta pista silenciosa en transceiver WebRTC y prepara los objetos de audio."""
+        if not self.sdk.is_connected:
+            return
+        self._mic_track = _MicTrack()
+        self._speaker   = _Speaker()
+        self._mega      = _MegaphoneStreamer(self.sdk)
+
+        for t in self.sdk.conn.pc.getTransceivers():
+            if t.kind == 'audio':
+                t.sender.replaceTrack(self._mic_track)
+                logger.info("Pista silenciosa registrada en transceiver WebRTC")
+                return
+        logger.warning("No se encontró transceiver de audio")
+
+    # ── Llamada en tiempo real ────────────────────────────────────────────
+
+    async def start_call(self):
+        if self._call_active or not self.sdk.is_connected:
+            return
+        self._call_active = True
+        self.is_active    = True
+        self._frame_logged = False
+
         try:
             await self.sdk.conn.datachannel.pub_sub.publish_request_new(
                 "rt/api/audiohub/request",
-                {
-                    "api_id": AUDIO_API["SELECT_DELETE"],
-                    "parameter": json.dumps({"unique_id": uuid}),
-                },
+                {"api_id": AUDIO_API["ENTER_MEGAPHONE"], "parameter": json.dumps({})},
             )
+            logger.info("ENTER_MEGAPHONE enviado al robot")
+        except Exception as e:
+            logger.warning(f"ENTER_MEGAPHONE: {e}")
+
+        if self._mega:
+            await self._mega.start()
+
+        if self._speaker:
+            self._speaker.start()
+            self.sdk.conn.audio.track_callbacks.clear()
+            self.sdk.conn.audio.add_track_callback(self._on_robot_audio)
+            self.sdk.conn.audio.switchAudioChannel(True)
+
+        logger.info("Llamada iniciada — PC mic→robot via data channel · robot mic→PC via WebRTC")
+
+    async def stop_call(self):
+        if not self._call_active:
+            return
+        self._call_active = False
+        self.is_active    = False
+
+        if self._mega:
+            await self._mega.stop()
+
+        try:
+            self.sdk.conn.audio.switchAudioChannel(False)
+            self.sdk.conn.audio.track_callbacks.clear()
         except Exception:
             pass
 
-    async def list_files(self) -> list:
-        """Devuelve la lista de archivos de audio guardados en el robot."""
-        if not self.sdk.is_connected:
-            return []
-        try:
-            response = await self.sdk.conn.datachannel.pub_sub.publish_request_new(
-                "rt/api/audiohub/request",
-                {"api_id": AUDIO_API["GET_AUDIO_LIST"], "parameter": json.dumps({})},
-            )
-            data_str = response.get('data', {}).get('data', '{}')
-            return json.loads(data_str).get('audio_list', [])
-        except Exception as e:
-            logger.error(f"AudioService.list_files error: {e}")
-            return []
+        if self._speaker:
+            self._speaker.stop()
 
-    async def clear_all_files(self) -> int:
-        """Borra todos los archivos de audio del robot. Devuelve cuántos borró."""
-        files = await self.list_files()
-        deleted = 0
-        for f in files:
-            uid = f.get('UNIQUE_ID')
-            if not uid:
-                continue
-            try:
-                await self.sdk.conn.datachannel.pub_sub.publish_request_new(
-                    "rt/api/audiohub/request",
-                    {"api_id": AUDIO_API["SELECT_DELETE"], "parameter": json.dumps({"unique_id": uid})},
+        try:
+            await self.sdk.conn.datachannel.pub_sub.publish_request_new(
+                "rt/api/audiohub/request",
+                {"api_id": AUDIO_API["EXIT_MEGAPHONE"], "parameter": json.dumps({})},
+            )
+        except Exception as e:
+            logger.warning(f"EXIT_MEGAPHONE: {e}")
+
+        logger.info("Llamada terminada")
+
+    async def _on_robot_audio(self, frame):
+        """Recibe audio del robot (WebRTC) y lo reproduce en los altavoces del PC."""
+        if not self._call_active or not self._speaker:
+            return
+        try:
+            if not self._frame_logged:
+                self._frame_logged = True
+                logger.info(
+                    f"Audio robot — fmt={frame.format.name} "
+                    f"layout={frame.layout.name} "
+                    f"rate={frame.sample_rate} samples={frame.samples}"
                 )
-                deleted += 1
-            except Exception:
-                pass
-        if deleted:
-            logger.info(f"Borrados {deleted} archivos de audio del robot")
-        return deleted
+
+            arr = frame.to_ndarray()
+
+            if arr.dtype.kind == 'f':
+                arr = (np.clip(arr, -1.0, 1.0) * 32767).astype(np.int16)
+            else:
+                arr = arr.astype(np.int16)
+
+            n_ch = len(frame.layout.channels) or 1
+            if arr.ndim == 2 and arr.shape[0] == n_ch and arr.shape[1] > n_ch:
+                data = arr.T
+            else:
+                data = arr.flatten().reshape(-1, n_ch)
+
+            if data.shape[1] == 1:
+                data = np.column_stack([data, data])
+
+            if len(data) < BLOCK_SIZE:
+                data = np.pad(data, ((0, BLOCK_SIZE - len(data)), (0, 0)))
+            else:
+                data = data[:BLOCK_SIZE]
+
+            self._speaker.feed(data.astype(np.int16))
+
+        except Exception as e:
+            logger.error(f"Error audio robot→PC: {e}", exc_info=True)
+
+    # ── Volumen ───────────────────────────────────────────────────────────
 
     async def set_volume(self, level: int):
         if not self.sdk.is_connected:
@@ -215,4 +332,4 @@ class AudioService:
                 {"api_id": 1006, "parameter": {"volume": max(0, min(100, int(level)))}},
             )
         except Exception as e:
-            logger.error(f"AudioService.set_volume error: {e}")
+            logger.error(f"AudioService.set_volume: {e}")

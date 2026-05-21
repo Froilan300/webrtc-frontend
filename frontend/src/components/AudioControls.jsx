@@ -2,11 +2,18 @@ import { useState } from 'react'
 import { ws } from '../services/websocketService'
 
 export function AudioControls() {
-  const [talking, setTalking] = useState(false)
+  const [calling, setCalling] = useState(false)
   const [volume, setVolume]   = useState(50)
 
-  const startTalk = () => { setTalking(true);  ws.send('AUDIO_START') }
-  const stopTalk  = () => { setTalking(false); ws.send('AUDIO_STOP')  }
+  const toggleCall = () => {
+    if (calling) {
+      ws.send('CALL_STOP')
+      setCalling(false)
+    } else {
+      ws.send('CALL_START')
+      setCalling(true)
+    }
+  }
 
   const onVolume = (v) => {
     setVolume(v)
@@ -16,16 +23,14 @@ export function AudioControls() {
   return (
     <div className="space-y-3">
       <button
-        className={`w-full py-3 rounded-lg font-bold text-white select-none transition-all
-          ${talking
-            ? 'bg-red-500 shadow-red-500/30 shadow-lg scale-95'
+        className={`w-full py-3 rounded-lg font-bold text-white transition-all select-none
+          ${calling
+            ? 'bg-green-600 shadow-green-500/30 shadow-lg animate-pulse'
             : 'bg-gray-700 hover:bg-gray-600'
           }`}
-        onPointerDown={startTalk}
-        onPointerUp={stopTalk}
-        onPointerLeave={stopTalk}
+        onClick={toggleCall}
       >
-        {talking ? '● Hablando...' : '🎤 Push to Talk'}
+        {calling ? '🔴 En llamada — click para colgar' : '📞 Iniciar llamada'}
       </button>
 
       <div className="flex items-center gap-3">
@@ -37,6 +42,12 @@ export function AudioControls() {
         />
         <span className="text-gray-400 text-xs w-8">{volume}%</span>
       </div>
+
+      {calling && (
+        <p className="text-xs text-green-400 text-center">
+          Tu voz → altavoz robot · Micrófono robot → tus altavoces
+        </p>
+      )}
     </div>
   )
 }
