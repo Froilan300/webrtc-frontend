@@ -232,6 +232,7 @@ class AudioService:
             return
         self._call_active = True
         self.is_active    = True
+        self.sdk.call_active = True   # pausa el LiDAR mientras hay llamada (prioridad audio)
         self._frame_logged = False
 
         try:
@@ -259,6 +260,7 @@ class AudioService:
             return
         self._call_active = False
         self.is_active    = False
+        self.sdk.call_active = False   # reanuda el LiDAR
 
         if self._mega:
             await self._mega.stop()

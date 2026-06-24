@@ -22,6 +22,8 @@ class SDKService:
         self._last_telemetry_t: float = 0.0
         self._last_battery_t: float = 0.0
         self._last_status_t: float = 0.0     # log de estado cada 30 s
+        self.last_move_t: float = 0.0        # último comando de movimiento (para priorizar vídeo)
+        self.call_active: bool = False       # llamada en curso (para pausar el LiDAR)
 
     def set_broadcast(self, fn: Callable):
         self._broadcast = fn
@@ -120,6 +122,11 @@ class SDKService:
     def _emit(self, msg: dict):
         if self._broadcast and self._loop and self._loop.is_running():
             asyncio.run_coroutine_threadsafe(self._broadcast(msg), self._loop)
+
+    def _emit_text(self, text: str):
+        """Envía un mensaje ya serializado como JSON string — sin json.dumps en el event loop."""
+        if self._broadcast and self._loop and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(self._broadcast(text), self._loop)
 
     async def disconnect(self):
         if self.conn is not None:

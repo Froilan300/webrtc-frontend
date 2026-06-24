@@ -1,10 +1,12 @@
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 
 from services.sdk_service import SDKService
 from services.movement_service import MovementService
@@ -12,13 +14,16 @@ from services.camera_service import CameraService
 from services.audio_service import AudioService
 from services.map_service import MapService
 from services.patrol_service import PatrolService
+from services.lidar_service import LidarService
+from services.media_service import MediaService, MEDIA_DIR
 
 class _SDKFilter(logging.Filter):
     """Bloquea los mensajes ruidosos del SDK de Unitree (lowstate 500Hz, heartbeat, RTC)."""
     _BLOCKED = (
         "message sent", "Received message on data channel",
         "Heartbeat", "Network status", "rtt_probe", "lowstate",
-        "aiortc", "aioice",
+        "aiortc", "aioice", "Receiving audio frame",
+        "H264Decoder", "failed to decode, skipping",
     )
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()
@@ -38,19 +43,25 @@ camera = CameraService(sdk)
 audio = AudioService(sdk)
 maps = MapService()
 patrol = PatrolService(movement, sdk)
+lidar = LidarService(sdk)
+media = MediaService(camera)
 
 # --- Clientes WebSocket conectados ---
 ws_clients: set[WebSocket] = set()
+_send_lock = asyncio.Lock()   # serializa los envíos: nunca dos send_text a la vez en el mismo WS
 
 
-async def broadcast(msg: dict):
-    dead = set()
-    for ws in ws_clients:
-        try:
-            await ws.send_json(msg)
-        except Exception:
-            dead.add(ws)
-    ws_clients.difference_update(dead)
+async def broadcast(msg):
+    """Acepta dict (serializa aquí) o str (ya serializado en hilo — LiDAR)."""
+    text = msg if isinstance(msg, str) else json.dumps(msg)
+    async with _send_lock:
+        dead = set()
+        for ws in ws_clients:
+            try:
+                await ws.send_text(text)
+            except Exception:
+                dead.add(ws)
+        ws_clients.difference_update(dead)
 
 
 @asynccontextmanager
@@ -100,8 +111,17 @@ async def _handle(msg: dict):
             float(payload.get("z", 0)),
         )
     elif cmd == "STOP":
-        await movement.stop()
+        # Si hay una patrulla en curso, pararla también (si no, sus comandos Move
+        # pisarían el stop y el robot seguiría andando).
+        if patrol.is_patrolling:
+            await patrol.stop()
+            await broadcast({"type": "PATROL_STATUS", "data": {"status": "STOPPED", "progress": 0}})
+        else:
+            await movement.stop()
     elif cmd == "EMERGENCY_STOP":
+        if patrol.is_patrolling:
+            await patrol.stop()
+            await broadcast({"type": "PATROL_STATUS", "data": {"status": "STOPPED", "progress": 0}})
         await movement.emergency_stop()
     elif cmd == "STAND_UP":
         await movement.stand_up()
@@ -129,6 +149,12 @@ async def _handle(msg: dict):
         await audio.stop_call()
     elif cmd == "SET_VOLUME":
         await audio.set_volume(payload.get("level", 50))
+    elif cmd == "LIDAR_START":
+        asyncio.create_task(lidar.start())
+    elif cmd == "LIDAR_STOP":
+        lidar.stop()
+    elif cmd == "LIDAR_RESET":
+        lidar.reset()
 
 
 # ─────────────────────────── HTTP ───────────────────────────
@@ -139,6 +165,33 @@ async def video_stream():
         camera.mjpeg_stream(),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
+
+
+# ─────────────────────────── Foto / Vídeo ───────────────────────────
+
+@app.post("/api/photo")
+async def take_photo():
+    return {"filename": media.capture_photo()}
+
+
+@app.post("/api/video/start")
+async def video_start():
+    name = await media.start_recording()
+    return {"filename": name, "recording": media.is_recording}
+
+
+@app.post("/api/video/stop")
+async def video_stop():
+    return {"filename": await media.stop_recording()}
+
+
+@app.get("/api/media/{name}")
+async def get_media(name: str):
+    safe = Path(name).name   # evita path traversal
+    path = MEDIA_DIR / safe
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="archivo no encontrado")
+    return FileResponse(str(path), filename=safe)
 
 
 @app.get("/api/status")

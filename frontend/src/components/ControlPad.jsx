@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ws } from '../services/websocketService'
 
-const SPEED = 0.6
-const TURN  = 0.9
+const SPEED = 0.7   // velocidad adelante/atrás (más bajo = no se pasa de largo)
+const TURN  = 1.7   // velocidad de giro (más alto = gira más rápido)
+const BOOST = 1.5   // multiplicador de velocidad al mantener Shift (turbo)
 const ZERO  = { x: 0, y: 0, z: 0 }
 
 function DPadBtn({ label, vec, onDown, onUp }) {
@@ -35,23 +36,29 @@ export function ControlPad() {
     const pressed = new Set()
 
     const update = () => {
+      const k = pressed.has('shift') ? BOOST : 1   // turbo con Shift
       const v = { x: 0, y: 0, z: 0 }
-      if (pressed.has('ArrowUp')    || pressed.has('w')) v.x =  SPEED
-      if (pressed.has('ArrowDown')  || pressed.has('s')) v.x = -SPEED
-      if (pressed.has('ArrowLeft')  || pressed.has('a')) v.z =  TURN
-      if (pressed.has('ArrowRight') || pressed.has('d')) v.z = -TURN
-      if (pressed.has('q')) v.y =  SPEED
-      if (pressed.has('e')) v.y = -SPEED
+      if (pressed.has('arrowup')    || pressed.has('w')) v.x =  SPEED * k
+      if (pressed.has('arrowdown')  || pressed.has('s')) v.x = -SPEED * k
+      if (pressed.has('arrowleft')  || pressed.has('a')) v.z =  TURN
+      if (pressed.has('arrowright') || pressed.has('d')) v.z = -TURN
+      if (pressed.has('q')) v.y =  SPEED * k
+      if (pressed.has('e')) v.y = -SPEED * k
       setVec(v)
     }
 
-    const kd = (e) => { pressed.add(e.key); update() }
-    const ku = (e) => { pressed.delete(e.key); update() }
+    // Normalizamos a minúsculas: así soltar la tecla SIEMPRE la borra del set
+    // (si no, con Shift/Mayús el keyup llega en otra caja y el robot no para).
+    const kd = (e) => { pressed.add(e.key.toLowerCase()); update() }
+    const ku = (e) => { pressed.delete(e.key.toLowerCase()); update() }
+    const clear = () => { pressed.clear(); update() }   // al perder el foco, soltar todo
     window.addEventListener('keydown', kd)
     window.addEventListener('keyup',   ku)
+    window.addEventListener('blur',    clear)
     return () => {
       window.removeEventListener('keydown', kd)
       window.removeEventListener('keyup',   ku)
+      window.removeEventListener('blur',    clear)
     }
   }, [])
 
@@ -108,7 +115,7 @@ export function ControlPad() {
         <div />
       </div>
 
-      <p className="text-xs text-gray-500 text-center">WASD / Flechas · Q/E lateral</p>
+      <p className="text-xs text-gray-500 text-center">WASD / Flechas · Q/E lateral · Shift = turbo</p>
     </div>
   )
 }

@@ -39,6 +39,10 @@ class CameraService:
             self.sdk.conn.video.switchVideoChannel(False)
         self.is_streaming = False
 
+    def get_last_frame(self):
+        """Último frame de la cámara (numpy BGR) para foto/vídeo, o None."""
+        return self._last_frame
+
     async def _recv(self, track: MediaStreamTrack):
         logger.info("CameraService._recv iniciado — recibiendo frames")
         while self.is_streaming:

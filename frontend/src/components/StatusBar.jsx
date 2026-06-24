@@ -13,15 +13,23 @@ export function StatusBar() {
     patrolStatus === 'PAUSED'  ? 'text-yellow-400' : 'text-gray-500'
 
   return (
-    <header className="flex items-center justify-between px-4 py-2 bg-gray-900 border-b border-gray-700 text-sm font-mono">
-      <div className="flex items-center gap-2">
-        <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400' : 'bg-red-500'}`} />
-        <span className={isConnected ? 'text-green-400' : 'text-red-400'}>
-          {isConnected ? 'Conectado' : 'Desconectado'}
-        </span>
+    <header className="flex items-center justify-between px-4 py-2 bg-gray-900 border-b border-gray-700 text-base font-mono">
+      <div className="flex items-center gap-4">
+        <img
+          src="/logo.png"
+          alt="LincEx Robotics"
+          className="h-20 w-auto"
+          onError={(e) => { e.currentTarget.style.display = 'none' }}
+        />
+        <div className="flex items-center gap-2">
+          <span className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-400' : 'bg-red-500'}`} />
+          <span className={`text-lg font-bold ${isConnected ? 'text-green-400' : 'text-red-400'}`}>
+            {isConnected ? 'Conectado' : 'Desconectado'}
+          </span>
+        </div>
       </div>
 
-      <div className="flex items-center gap-6 text-xs">
+      <div className="flex items-center gap-6 text-base">
         <span className={battColor}>BAT {battery.toFixed(0)}%</span>
         <span className="text-purple-300">MODO: {MODE_LABELS[mode] ?? mode}</span>
         <span className="text-gray-400">
@@ -29,7 +37,7 @@ export function StatusBar() {
         </span>
       </div>
 
-      <span className={patrolColor}>PATRULLA: {patrolStatus}</span>
+      <span className={`text-lg font-bold ${patrolColor}`}>PATRULLA: {patrolStatus}</span>
     </header>
   )
 }
