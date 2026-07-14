@@ -136,10 +136,10 @@ async def _handle(msg: dict):
             await broadcast({"type": "PATROL_STATUS", "data": {"status": "RUNNING", "progress": 0}})
     elif cmd == "PAUSE_PATROL":
         patrol.pause()
-        await broadcast({"type": "PATROL_STATUS", "data": {"status": "PAUSED", "progress": patrol.get_progress()}})
+        await broadcast({"type": "PATROL_STATUS", "data": {"status": "PAUSED", "progress": patrol.get_progress(), "target": patrol.current_target}})
     elif cmd == "RESUME_PATROL":
         patrol.resume()
-        await broadcast({"type": "PATROL_STATUS", "data": {"status": "RUNNING", "progress": patrol.get_progress()}})
+        await broadcast({"type": "PATROL_STATUS", "data": {"status": "RUNNING", "progress": patrol.get_progress(), "target": patrol.current_target}})
     elif cmd == "STOP_PATROL":
         await patrol.stop()
         await broadcast({"type": "PATROL_STATUS", "data": {"status": "STOPPED", "progress": 0}})

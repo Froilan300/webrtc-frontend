@@ -6,6 +6,7 @@ import { ControlPad }   from './components/ControlPad'
 import { AudioControls }from './components/AudioControls'
 import { MapView }      from './components/MapView'
 import { PatrolPanel }  from './components/PatrolPanel'
+import { BatteryAlert } from './components/BatteryAlert'
 
 const PointCloudView = lazy(() =>
   import('./components/PointCloudView').then(m => ({ default: m.PointCloudView }))
@@ -106,6 +107,8 @@ export default function App() {
 
         </div>
       </main>
+
+      <BatteryAlert />
     </div>
   )
 }

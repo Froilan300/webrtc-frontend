@@ -47,7 +47,7 @@ class WebSocketService {
         store.setBattery(msg.data.level)
         break
       case 'PATROL_STATUS':
-        store.setPatrolStatus(msg.data.status, msg.data.progress)
+        store.setPatrolStatus(msg.data.status, msg.data.progress, msg.data.target ?? -1)
         break
     }
 

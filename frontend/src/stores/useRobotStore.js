@@ -7,9 +7,11 @@ export const useRobotStore = create((set) => ({
   mode:           0,
   patrolStatus:   'STOPPED',
   patrolProgress: 0,
+  patrolTarget:   -1,   // índice del waypoint que el robot persigue ahora (-1 = ninguno)
 
   setConnected:    (isConnected) => set({ isConnected }),
   setBattery:      (battery)     => set({ battery }),
   updateTelemetry: (position, mode) => set({ position, mode }),
-  setPatrolStatus: (patrolStatus, patrolProgress) => set({ patrolStatus, patrolProgress }),
+  setPatrolStatus: (patrolStatus, patrolProgress, patrolTarget = -1) =>
+    set({ patrolStatus, patrolProgress, patrolTarget }),
 }))
