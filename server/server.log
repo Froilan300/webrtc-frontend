@@ -1,0 +1,6 @@
+  users.json creado con admin/admin  ->  CAMBIALO ya (npm run hash <clave>)
+Servidor de empresa (local)  ->  http://localhost:3000
+  frontend:  C:\Users\Usuario\Desktop\manejo-Go2 - server\frontend\dist
+  proxy   ->  http://localhost:8080
+[AUTH] login FALLIDO: admin (::1)
+[AUTH] login OK: admin (::1)

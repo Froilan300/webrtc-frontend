@@ -8,7 +8,11 @@ class WebSocketService {
   connect() {
     if (this.ws?.readyState === WebSocket.OPEN) return
 
-    this.ws = new WebSocket('ws://localhost:8080/ws')
+    // La URL se deriva de donde esta servido el panel: asi va al servidor de
+    // empresa (que reenvia /ws al Bridge) y funciona igual en http/ws que en
+    // https/wss, sin hardcodear ninguna IP.
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    this.ws = new WebSocket(`${proto}//${location.host}/ws`)
 
     this.ws.onopen = () => {
       useRobotStore.getState().setConnected(true)

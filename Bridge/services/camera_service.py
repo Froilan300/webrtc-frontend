@@ -17,7 +17,7 @@ class CameraService:
         self.sdk = sdk
         self._queue: Queue = Queue(maxsize=2)
         self.is_streaming = False
-        self._track_cb_registered = False
+        self._cb_conn = None      # conexión sobre la que registramos el callback (re-registrar al reconectar)
         self._last_frame = None
 
         blank = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -28,9 +28,11 @@ class CameraService:
         if not self.sdk.is_connected:
             return
         self.sdk.conn.video.switchVideoChannel(True)
-        if not self._track_cb_registered:
+        # Re-registrar el callback si la conexión es nueva (tras una reconexión el
+        # objeto conn cambia, y el callback anterior quedó sobre la conexión muerta).
+        if self._cb_conn is not self.sdk.conn:
             self.sdk.conn.video.add_track_callback(self._recv)
-            self._track_cb_registered = True
+            self._cb_conn = self.sdk.conn
         self.is_streaming = True
         logger.info("Cámara iniciada")
 

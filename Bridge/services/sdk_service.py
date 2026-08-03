@@ -10,6 +10,10 @@ from unitree_webrtc_connect.constants import RTC_TOPIC
 
 logger = logging.getLogger(__name__)
 
+RECONNECT_INTERVAL = 5.0  # s entre intentos de conexión con el robot (modo espera)
+STALE_TIMEOUT      = 5.0  # s sin datos del robot => conexión caída (reconectar)
+WATCHDOG_TICK      = 1.0  # s entre chequeos del watchdog mientras está conectado
+
 
 class SDKService:
     def __init__(self):
@@ -24,12 +28,71 @@ class SDKService:
         self._last_status_t: float = 0.0     # log de estado cada 30 s
         self.last_move_t: float = 0.0        # último comando de movimiento (para priorizar vídeo)
         self.call_active: bool = False       # llamada en curso (para pausar el LiDAR)
+        self._on_connected: Optional[Callable] = None   # hook: se llama al conectar (cámara/audio)
+        self._should_run: bool = False                  # el supervisor sigue vivo
+        self._supervisor_task: Optional[asyncio.Task] = None
+        self._last_emit_connected: Optional[bool] = None  # para emitir CONNECTION solo al cambiar
+        self._last_rx_t: float = 0.0                      # último dato recibido del robot (watchdog)
 
     def set_broadcast(self, fn: Callable):
         self._broadcast = fn
 
-    async def connect(self):
+    def set_on_connected(self, fn: Callable):
+        """Hook que se ejecuta cada vez que el robot pasa a CONECTADO."""
+        self._on_connected = fn
+
+    async def start_supervisor(self):
+        """Arranca el bucle de conexión en segundo plano. NO bloquea el arranque:
+        el Bridge queda operativo (HTTP/WS arriba) aunque el robot esté apagado."""
         self._loop = asyncio.get_running_loop()
+        self._should_run = True
+        self._supervisor_task = asyncio.create_task(self._supervisor())
+
+    async def _supervisor(self):
+        """Espera / reconexión con el robot.
+
+        - Perro apagado: queda EN ESPERA y reintenta cada RECONNECT_INTERVAL s.
+        - Perro conectado: vigila que sigan llegando datos (telemetría). Si el robot
+          se apaga o pierde el WiFi a mitad de sesión, la telemetría deja de llegar
+          y a los STALE_TIMEOUT s lo damos por caído y reconectamos solos.
+        """
+        waiting_logged = False
+        while self._should_run:
+            if not self.is_connected:
+                if await self._try_connect_once():
+                    waiting_logged = False
+                    self._last_rx_t = time.monotonic()   # (re)arranca el watchdog
+                    await self._emit_connection_status()
+                    if self._on_connected:
+                        try:
+                            await self._on_connected()
+                        except Exception as e:
+                            logger.error(f"on_connected error: {e}")
+                else:
+                    if not waiting_logged:
+                        logger.info(
+                            f"Bridge EN ESPERA del robot — reintentando cada "
+                            f"{int(RECONNECT_INTERVAL)}s (enciende el perro cuando quieras)"
+                        )
+                        waiting_logged = True
+                    await self._emit_connection_status()
+                    await asyncio.sleep(RECONNECT_INTERVAL)
+                    continue
+            else:
+                # Conectado: watchdog. ¿Siguen llegando datos del robot?
+                if time.monotonic() - self._last_rx_t > STALE_TIMEOUT:
+                    logger.warning(
+                        f"Sin datos del robot durante >{int(STALE_TIMEOUT)}s — "
+                        f"conexión caída, reconectando…"
+                    )
+                    self.is_connected = False
+                    await self._emit_connection_status()
+                    await self._teardown_conn()
+                    continue   # vuelve arriba y reconecta de inmediato
+            await asyncio.sleep(WATCHDOG_TICK)
+
+    async def _try_connect_once(self) -> bool:
+        """Un intento de conexión. True si conectó, False si el robot no está."""
         try:
             self.conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalAP)
             task = asyncio.create_task(self.conn.connect())
@@ -40,9 +103,30 @@ class SDKService:
                 logger.info("Robot conectado — data channel OK (video pendiente)")
             self.is_connected = True
             self._subscribe()
+            return True
         except (Exception, SystemExit) as e:
             logger.warning(f"Robot no disponible: {e}")
             self.is_connected = False
+            await self._teardown_conn()
+            return False
+
+    async def _emit_connection_status(self):
+        """Avisa al frontend del estado de conexión, solo cuando cambia."""
+        if self._broadcast and self.is_connected != self._last_emit_connected:
+            self._last_emit_connected = self.is_connected
+            try:
+                await self._broadcast({"type": "CONNECTION", "data": {"connected": self.is_connected}})
+            except Exception:
+                pass
+
+    async def _teardown_conn(self):
+        """Cierra la conexión a medio abrir (evita acumular peers en cada reintento)."""
+        if self.conn is not None:
+            try:
+                await self.conn.disconnect()
+            except Exception:
+                pass
+            self.conn = None
 
     def _subscribe(self):
         self.conn.datachannel.pub_sub.subscribe(RTC_TOPIC["SPORT_MOD_STATE"], self._on_sport_state)
@@ -60,6 +144,7 @@ class SDKService:
         state = self._parse_message(message)
         if state is None:
             return
+        self._last_rx_t = time.monotonic()   # dato fresco del robot (watchdog)
 
         pos = state.get("position", [0.0, 0.0, 0.0])
         imu = state.get("imu_state")
@@ -92,6 +177,7 @@ class SDKService:
                 self.heading = rpy[2]
 
         now = time.monotonic()
+        self._last_rx_t = now   # dato fresco del robot (watchdog)
 
         # Enviar heading real al canvas a 10 Hz (lowstate llega a ~500 Hz)
         if now - self._last_telemetry_t >= 0.1:
@@ -129,9 +215,13 @@ class SDKService:
             asyncio.run_coroutine_threadsafe(self._broadcast(text), self._loop)
 
     async def disconnect(self):
-        if self.conn is not None:
+        self._should_run = False
+        if self._supervisor_task:
+            self._supervisor_task.cancel()
             try:
-                await self.conn.disconnect()
-            except Exception:
+                await self._supervisor_task
+            except asyncio.CancelledError:
                 pass
+            self._supervisor_task = None
+        await self._teardown_conn()
         self.is_connected = False

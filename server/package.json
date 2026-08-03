@@ -1,0 +1,19 @@
+{
+  "name": "go2-company-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Servidor de empresa (local): sirve el frontend, reenvia al Bridge y pide login.",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "hash": "node hash.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie": "^0.6.0",
+    "cookie-signature": "^1.2.1",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "http-proxy-middleware": "^3.0.0"
+  }
+}

@@ -64,13 +64,19 @@ async def broadcast(msg):
         ws_clients.difference_update(dead)
 
 
+async def _on_robot_connected():
+    """Se ejecuta cada vez que el robot pasa a conectado (arranca cámara y audio)."""
+    await camera.start()
+    await audio.setup_live_audio()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     sdk.set_broadcast(broadcast)
-    await sdk.connect()
-    if sdk.is_connected:
-        await camera.start()
-        await audio.setup_live_audio()
+    sdk.set_on_connected(_on_robot_connected)
+    # Arranca el supervisor de conexión en segundo plano: el Bridge queda EN ESPERA
+    # si el robot está apagado y conecta solo cuando el perro emita señal.
+    await sdk.start_supervisor()
     yield
     await sdk.disconnect()
 
