@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import time
 from typing import Callable, Optional
 
@@ -13,6 +14,13 @@ logger = logging.getLogger(__name__)
 RECONNECT_INTERVAL = 5.0  # s entre intentos de conexión con el robot (modo espera)
 STALE_TIMEOUT      = 5.0  # s sin datos del robot => conexión caída (reconectar)
 WATCHDOG_TICK      = 1.0  # s entre chequeos del watchdog mientras está conectado
+
+# Cómo conecta el Bridge con el robot (variable de entorno ROBOT_CONN):
+#   "auto"     -> prueba primero el WiFi del robot y, si falla, el cable (por defecto)
+#   "LocalAP"  -> solo WiFi del robot (192.168.12.1)
+#   "LocalSTA" -> solo cable / LAN, en la IP ROBOT_IP
+ROBOT_CONN = os.environ.get("ROBOT_CONN", "auto").strip()
+ROBOT_IP   = os.environ.get("ROBOT_IP", "192.168.123.161").strip()
 
 
 class SDKService:
@@ -91,24 +99,38 @@ class SDKService:
                     continue   # vuelve arriba y reconecta de inmediato
             await asyncio.sleep(WATCHDOG_TICK)
 
+    def _connection_modes(self):
+        """Modos de conexión a probar, en orden. En 'auto': primero WiFi, luego cable."""
+        ap  = (WebRTCConnectionMethod.LocalAP,  None,     "LocalAP (WiFi del robot)")
+        sta = (WebRTCConnectionMethod.LocalSTA, ROBOT_IP, f"LocalSTA (cable, {ROBOT_IP})")
+        m = ROBOT_CONN.lower()
+        if m == "localap":
+            return [ap]
+        if m == "localsta":
+            return [sta]
+        return [ap, sta]   # auto: si el WiFi falla, prueba el cable
+
     async def _try_connect_once(self) -> bool:
-        """Un intento de conexión. True si conectó, False si el robot no está."""
-        try:
-            self.conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalAP)
-            task = asyncio.create_task(self.conn.connect())
+        """Un intento de conexión. Prueba los modos configurados en orden y
+        devuelve True en cuanto uno conecta; False si ninguno lo consigue."""
+        for method, ip, label in self._connection_modes():
             try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=15.0)
-                logger.info("Robot conectado (LocalAP)")
-            except asyncio.TimeoutError:
-                logger.info("Robot conectado — data channel OK (video pendiente)")
-            self.is_connected = True
-            self._subscribe()
-            return True
-        except (Exception, SystemExit) as e:
-            logger.warning(f"Robot no disponible: {e}")
-            self.is_connected = False
-            await self._teardown_conn()
-            return False
+                self.conn = (UnitreeWebRTCConnection(method, ip=ip)
+                             if ip else UnitreeWebRTCConnection(method))
+                task = asyncio.create_task(self.conn.connect())
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=15.0)
+                    logger.info(f"Robot conectado ({label})")
+                except asyncio.TimeoutError:
+                    logger.info(f"Robot conectado — data channel OK, video pendiente ({label})")
+                self.is_connected = True
+                self._subscribe()
+                return True
+            except (Exception, SystemExit) as e:
+                logger.warning(f"No conecta por {label}: {e}")
+                await self._teardown_conn()
+        self.is_connected = False
+        return False
 
     async def _emit_connection_status(self):
         """Avisa al frontend del estado de conexión, solo cuando cambia."""

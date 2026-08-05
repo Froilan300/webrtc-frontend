@@ -14,6 +14,8 @@
  */
 const path = require('path')
 const fs = require('fs')
+const http = require('http')
+const https = require('https')
 const express = require('express')
 const session = require('express-session')
 const bcrypt = require('bcryptjs')
@@ -28,6 +30,13 @@ const SECRET      = process.env.SESSION_SECRET || 'cambia-esto-en-produccion'
 const COOKIE_NAME = 'go2.sid'
 const FRONTEND    = path.resolve(__dirname, '..', 'frontend', 'dist')
 const USERS_FILE  = path.join(__dirname, 'users.json')
+
+// HTTPS con mkcert: si estan los certificados en ../certs, el servidor arranca en
+// https (necesario para WebXR en la Quest / movil por la red). Si no, http normal.
+const CERT_DIR = path.resolve(__dirname, '..', 'certs')
+const httpsCfg = (fs.existsSync(path.join(CERT_DIR, 'dev-key.pem')) && fs.existsSync(path.join(CERT_DIR, 'dev-cert.pem')))
+  ? { key: fs.readFileSync(path.join(CERT_DIR, 'dev-key.pem')), cert: fs.readFileSync(path.join(CERT_DIR, 'dev-cert.pem')) }
+  : null
 
 // ─── Usuarios: se siembra admin/admin en el primer arranque ───────────────────
 if (!fs.existsSync(USERS_FILE)) {
@@ -47,7 +56,7 @@ const sessionMiddleware = session({
   store,
   resave: false,
   saveUninitialized: false,
-  cookie: { httpOnly: true, sameSite: 'lax', maxAge: 1000 * 60 * 60 * 8 }, // 8 h
+  cookie: { httpOnly: true, sameSite: 'lax', secure: 'auto', maxAge: 1000 * 60 * 60 * 8 }, // 8 h (secure solo en https)
 })
 app.use(sessionMiddleware)
 app.use(express.urlencoded({ extended: false }))
@@ -64,7 +73,9 @@ app.post('/login', (req, res) => {
   if (hash && bcrypt.compareSync(password || '', hash)) {
     req.session.user = username
     console.log(`[AUTH] login OK: ${username} (${req.ip})`)
-    return res.redirect('/')
+    const dest = req.session.returnTo || '/'   // volver a lo que se pidio (p.ej. /xr.html)
+    delete req.session.returnTo
+    return res.redirect(dest)
   }
   console.warn(`[AUTH] login FALLIDO: ${username || '(vacio)'} (${req.ip})`)
   res.redirect('/login?error=1')
@@ -83,6 +94,7 @@ function requireAuth(req, res, next) {
   if (url.startsWith('/api') || url.startsWith('/video')) {
     return res.status(401).json({ error: 'no autenticado' })
   }
+  req.session.returnTo = url   // tras el login, volver aqui (util para /xr.html en la Quest)
   res.redirect('/login')
 }
 
@@ -106,10 +118,13 @@ app.use(requireAuth, express.static(FRONTEND))
 app.get('*', requireAuth, (req, res) => res.sendFile(path.join(FRONTEND, 'index.html')))
 
 // ─── Arranque ─────────────────────────────────────────────────────────────────
-const server = app.listen(PORT, () => {
-  console.log(`Servidor de empresa (local)  ->  http://localhost:${PORT}`)
+const server = httpsCfg ? https.createServer(httpsCfg, app) : http.createServer(app)
+server.listen(PORT, () => {
+  const proto = httpsCfg ? 'https' : 'http'
+  console.log(`Servidor de empresa (local)  ->  ${proto}://localhost:${PORT}`)
   console.log(`  frontend:  ${FRONTEND}`)
   console.log(`  proxy   ->  ${BRIDGE_URL}`)
+  if (httpsCfg) console.log('  HTTPS (mkcert) activo — accesible por la IP de la LAN (Quest/movil)')
 })
 
 // ─── Autorizacion del WebSocket ───────────────────────────────────────────────
