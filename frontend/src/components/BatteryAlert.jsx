@@ -1,12 +1,19 @@
+/**
+ * BatteryAlert — aviso emergente de batería baja.
+ * Modal al 10 % (amarillo) y al 5 % (rojo), para sentar/cargar el robot antes de
+ * que se quede sin batería y se desplome. Se rearma al recargar por encima del 15 %.
+ */
 import { useEffect, useRef, useState } from 'react'
 import { useRobotStore } from '../stores/useRobotStore'
 
 export function BatteryAlert() {
   const battery     = useRobotStore(s => s.battery)
   const isConnected = useRobotStore(s => s.isConnected)
-  const [alert, setAlert] = useState(null)   // null | 10 | 5
-  const warned = useRef({ 10: false, 5: false })
+  const [alert, setAlert] = useState(null)   // null | 10 | 5  → qué aviso mostrar
+  const warned = useRef({ 10: false, 5: false })   // evita repetir el mismo aviso
 
+  // Vigila la batería: dispara el aviso al cruzar el 10 % y el 5 %, y rearma los
+  // avisos si se recarga por encima del 15 %.
   useEffect(() => {
     if (!isConnected || battery <= 0) return   // 0 = aún sin lectura / desconectado
 

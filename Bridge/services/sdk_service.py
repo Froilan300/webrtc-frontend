@@ -1,3 +1,15 @@
+"""
+sdk_service — conexión WebRTC con el robot y telemetría.
+
+Es la única pieza que habla directamente con el Go2 (vía `unitree_webrtc_connect`).
+Se suscribe a dos topics del robot:
+  • SPORT_MOD_STATE → posición (x, y) de la odometría.
+  • LOW_STATE       → rumbo real de la IMU (yaw) y batería.
+
+Reemite la telemetría al frontend mediante `_emit` (a ~10 Hz, porque el robot
+la manda a ~500 Hz). El resto de servicios usan esta clase como puerta de acceso
+al robot (`sdk.conn`) y leen `sdk.position` / `sdk.heading`.
+"""
 import asyncio
 import json
 import logging
@@ -12,7 +24,10 @@ logger = logging.getLogger(__name__)
 
 
 class SDKService:
+    """Envuelve la conexión WebRTC con el robot y publica su telemetría."""
+
     def __init__(self):
+        """Inicializa el estado; NO conecta todavía (eso lo hace `connect`)."""
         self.conn: Optional[UnitreeWebRTCConnection] = None
         self.is_connected = False
         self.position: dict = {"x": 0.0, "y": 0.0, "heading": 0.0}
@@ -26,9 +41,13 @@ class SDKService:
         self.call_active: bool = False       # llamada en curso (para pausar el LiDAR)
 
     def set_broadcast(self, fn: Callable):
+        """Registra la función `broadcast` de main.py que reparte a los WebSocket."""
         self._broadcast = fn
 
     async def connect(self):
+        """Conecta al robot por WebRTC (LocalAP). Si conecta, se suscribe a los
+        topics de telemetría. Guarda el event loop para reemitir desde los
+        callbacks (que corren en otro hilo)."""
         self._loop = asyncio.get_running_loop()
         try:
             self.conn = UnitreeWebRTCConnection(WebRTCConnectionMethod.LocalAP)
@@ -37,6 +56,7 @@ class SDKService:
                 await asyncio.wait_for(asyncio.shield(task), timeout=15.0)
                 logger.info("Robot conectado (LocalAP)")
             except asyncio.TimeoutError:
+                # El vídeo puede tardar; el data channel suele estar listo antes.
                 logger.info("Robot conectado — data channel OK (video pendiente)")
             self.is_connected = True
             self._subscribe()
@@ -45,11 +65,13 @@ class SDKService:
             self.is_connected = False
 
     def _subscribe(self):
+        """Se suscribe a SPORT_MOD_STATE (posición) y LOW_STATE (IMU + batería)."""
         self.conn.datachannel.pub_sub.subscribe(RTC_TOPIC["SPORT_MOD_STATE"], self._on_sport_state)
         self.conn.datachannel.pub_sub.subscribe(RTC_TOPIC["LOW_STATE"], self._on_low_state)
 
     @staticmethod
     def _parse_message(message: dict):
+        """Extrae el payload de un mensaje del robot (viene como dict o JSON string)."""
         raw = message.get("data", {})
         try:
             return json.loads(raw) if isinstance(raw, str) else raw
@@ -57,6 +79,8 @@ class SDKService:
             return None
 
     def _on_sport_state(self, message: dict):
+        """Callback de SPORT_MOD_STATE: guarda la posición (x, y) de la odometría
+        y la reemite al frontend como TELEMETRY."""
         state = self._parse_message(message)
         if state is None:
             return
@@ -81,6 +105,9 @@ class SDKService:
         })
 
     def _on_low_state(self, message: dict):
+        """Callback de LOW_STATE (llega a ~500 Hz): actualiza el rumbo real de la
+        IMU y, con límite de frecuencia, reemite rumbo (10 Hz), batería (5 s) y
+        un log de estado (30 s)."""
         state = self._parse_message(message)
         if state is None:
             return
@@ -120,15 +147,19 @@ class SDKService:
             )
 
     def _emit(self, msg: dict):
+        """Reparte un dict a los WebSocket desde cualquier hilo (los callbacks del
+        SDK no corren en el event loop) usando `run_coroutine_threadsafe`."""
         if self._broadcast and self._loop and self._loop.is_running():
             asyncio.run_coroutine_threadsafe(self._broadcast(msg), self._loop)
 
     def _emit_text(self, text: str):
-        """Envía un mensaje ya serializado como JSON string — sin json.dumps en el event loop."""
+        """Como `_emit` pero para un mensaje ya serializado como JSON string
+        (lo usa el LiDAR: serializa en un executor y evita json.dumps en el loop)."""
         if self._broadcast and self._loop and self._loop.is_running():
             asyncio.run_coroutine_threadsafe(self._broadcast(text), self._loop)
 
     async def disconnect(self):
+        """Cierra la conexión WebRTC con el robot (al apagar el servidor)."""
         if self.conn is not None:
             try:
                 await self.conn.disconnect()

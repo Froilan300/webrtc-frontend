@@ -1,3 +1,16 @@
+"""
+Bridge Unitree Go2 — servidor FastAPI que conecta el navegador con el robot.
+
+Expone tres superficies:
+  • WebSocket `/ws`  → comandos en tiempo real (mover, patrullar, llamar…) y
+    telemetría por broadcast (posición, batería, patrulla, LiDAR).
+  • HTTP `/video`    → stream MJPEG de la cámara.
+  • HTTP `/api/...`  → foto/vídeo, estado, mapas y rutas.
+
+Instancia todos los servicios, enruta cada comando entrante a su servicio
+(`_handle`) y reparte a todos los clientes WebSocket lo que emiten los servicios
+(`broadcast`). Arranca con `python main.py` (Uvicorn en el puerto 8080).
+"""
 import asyncio
 import json
 import logging
@@ -26,6 +39,7 @@ class _SDKFilter(logging.Filter):
         "H264Decoder", "failed to decode, skipping",
     )
     def filter(self, record: logging.LogRecord) -> bool:
+        """Devuelve False (descarta) si el mensaje contiene una cadena bloqueada."""
         msg = record.getMessage()
         return not any(b in msg for b in self._BLOCKED)
 
@@ -52,7 +66,9 @@ _send_lock = asyncio.Lock()   # serializa los envíos: nunca dos send_text a la 
 
 
 async def broadcast(msg):
-    """Acepta dict (serializa aquí) o str (ya serializado en hilo — LiDAR)."""
+    """Envía un mensaje a TODOS los clientes WebSocket. Acepta dict (lo serializa
+    aquí) o str (ya serializado en otro hilo — LiDAR). El lock evita dos envíos
+    simultáneos sobre el mismo socket; los clientes caídos se descartan."""
     text = msg if isinstance(msg, str) else json.dumps(msg)
     async with _send_lock:
         dead = set()
@@ -66,6 +82,8 @@ async def broadcast(msg):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Ciclo de vida del servidor: al arrancar conecta al robot y, si hay conexión,
+    enciende cámara y audio; al apagar, desconecta el robot."""
     sdk.set_broadcast(broadcast)
     await sdk.connect()
     if sdk.is_connected:
@@ -88,6 +106,8 @@ app.add_middleware(
 
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
+    """Endpoint WebSocket: acepta al cliente, le manda el estado de conexión y
+    procesa cada comando entrante hasta que se desconecta."""
     await websocket.accept()
     ws_clients.add(websocket)
     await websocket.send_json({"type": "CONNECTION", "data": {"connected": sdk.is_connected}})
@@ -101,6 +121,8 @@ async def ws_endpoint(websocket: WebSocket):
 
 
 async def _handle(msg: dict):
+    """Enruta un comando del cliente `{type, payload}` al servicio correspondiente
+    (mover, parar, patrulla, audio, LiDAR…) y emite el estado que haga falta."""
     cmd = msg.get("type")
     payload = msg.get("payload", {})
 
@@ -161,6 +183,7 @@ async def _handle(msg: dict):
 
 @app.get("/video")
 async def video_stream():
+    """Stream MJPEG de la cámara (lo consume el `<img src="/video">` del navegador)."""
     return StreamingResponse(
         camera.mjpeg_stream(),
         media_type="multipart/x-mixed-replace; boundary=frame",
@@ -171,22 +194,26 @@ async def video_stream():
 
 @app.post("/api/photo")
 async def take_photo():
+    """Captura una foto del directo y devuelve su nombre de archivo."""
     return {"filename": media.capture_photo()}
 
 
 @app.post("/api/video/start")
 async def video_start():
+    """Empieza a grabar vídeo del directo."""
     name = await media.start_recording()
     return {"filename": name, "recording": media.is_recording}
 
 
 @app.post("/api/video/stop")
 async def video_stop():
+    """Detiene la grabación y devuelve el nombre del vídeo guardado."""
     return {"filename": await media.stop_recording()}
 
 
 @app.get("/api/media/{name}")
 async def get_media(name: str):
+    """Descarga una foto o vídeo guardado (protege contra path traversal)."""
     safe = Path(name).name   # evita path traversal
     path = MEDIA_DIR / safe
     if not path.is_file():
@@ -196,6 +223,7 @@ async def get_media(name: str):
 
 @app.get("/api/status")
 async def get_status():
+    """Estado actual: conexión con el robot, si patrulla y su progreso."""
     return {
         "connected": sdk.is_connected,
         "patrolling": patrol.is_patrolling,
@@ -205,31 +233,37 @@ async def get_status():
 
 @app.get("/api/maps")
 async def get_maps():
+    """Lista todos los mapas guardados."""
     return maps.list_maps()
 
 
 @app.post("/api/maps")
 async def create_map(body: dict):
+    """Crea un mapa nuevo con el nombre dado."""
     return maps.create(body.get("name", "Mapa"))
 
 
 @app.delete("/api/maps/{map_id}")
 async def delete_map(map_id: str):
+    """Borra un mapa por su id."""
     return {"deleted": maps.delete_map(map_id)}
 
 
 @app.get("/api/routes")
 async def get_routes():
+    """Lista todas las rutas de patrulla guardadas."""
     return maps.list_routes()
 
 
 @app.post("/api/routes")
 async def save_route(body: dict):
+    """Guarda una ruta de patrulla (waypoints + is_loop)."""
     return maps.save_route(body)
 
 
 @app.delete("/api/routes/{route_id}")
 async def delete_route(route_id: str):
+    """Borra una ruta por su id."""
     return {"deleted": maps.delete_route(route_id)}
 
 

@@ -1,3 +1,9 @@
+/**
+ * MapView — mapa SLAM 2D en canvas.
+ * El robot va SIEMPRE centrado y el mundo se desplaza a su alrededor (no se sale
+ * de pantalla). Dibuja la cuadrícula, los waypoints, la ruta activa con el
+ * objetivo actual resaltado en verde, y el robot. Clic = añadir waypoint.
+ */
 import { useEffect, useRef, useState } from 'react'
 import { useRobotStore } from '../stores/useRobotStore'
 import { useMapStore } from '../stores/useMapStore'
@@ -13,7 +19,7 @@ export function MapView() {
   const patrolStatus = useRobotStore(s => s.patrolStatus)
   const { waypoints, activeRoute } = useMapStore()
 
-  // El canvas se ajusta al tamaño real de su contenedor (no escala con el ancho)
+  // Ajusta la resolución del canvas al tamaño real de su contenedor (ResizeObserver)
   useEffect(() => {
     const wrap = wrapRef.current
     if (!wrap) return
@@ -26,6 +32,8 @@ export function MapView() {
     return () => ro.disconnect()
   }, [])
 
+  // Redibuja el mapa completo cada vez que cambia la posición, los waypoints,
+  // la ruta o el objetivo de patrulla.
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -36,6 +44,7 @@ export function MapView() {
 
     // El robot SIEMPRE va en el centro; el mundo se desplaza a su alrededor,
     // así nunca se sale de la pantalla en una patrulla larga.
+    // toCanvas: convierte coordenadas del mundo (metros) a píxeles del canvas.
     const cx = position.x, cy = position.y
     const toCanvas = (wx, wy) => ({
       px: W / 2 + (wx - cx) * SCALE,
@@ -127,6 +136,7 @@ export function MapView() {
     ctx.restore()
   }, [position, waypoints, activeRoute, patrolTarget, patrolStatus, size])
 
+  // Clic en el mapa → convierte el píxel a coordenada del mundo y añade un waypoint
   const handleClick = (e) => {
     const rect = canvasRef.current.getBoundingClientRect()
     const { w: W, h: H } = size

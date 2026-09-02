@@ -1,3 +1,9 @@
+/**
+ * App — layout principal del dashboard.
+ * Dos columnas: izquierda (cámara, control manual, audio) y derecha, que alterna
+ * entre el Mapa SLAM 2D y la Nube de puntos LiDAR 3D. Abre la conexión WebSocket
+ * al montar y monta la alerta de batería.
+ */
 import { useEffect, useState, lazy, Suspense } from 'react'
 import { ws } from './services/websocketService'
 import { StatusBar }    from './components/StatusBar'
@@ -15,8 +21,9 @@ const PointCloudView = lazy(() =>
 export default function App() {
   const [mapMode, setMapMode] = useState('slam')
 
-  useEffect(() => { ws.connect() }, [])
+  useEffect(() => { ws.connect() }, [])   // abre el WebSocket al montar
 
+  // Alterna entre el Mapa SLAM 2D y la Nube LiDAR 3D, encendiendo/apagando el LiDAR
   const toggleMapMode = () => {
     const next = mapMode === 'slam' ? 'cloud' : 'slam'
     setMapMode(next)

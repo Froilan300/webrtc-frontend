@@ -1,3 +1,18 @@
+"""
+patrol_service — patrulla autónoma por waypoints.
+
+Recorre una ruta (lista de waypoints) de forma determinista. Para cada tramo
+(punto → siguiente punto) hace DOS pasos:
+  1. Girar en el sitio hasta mirar al punto, en lazo cerrado con el rumbo REAL
+     de la IMU (`sdk.heading`), que es fiable (`_turn_to`).
+  2. Avanzar la distancia exacta por TIEMPO (tiempo = distancia / velocidad),
+     sin depender de que la odometría se actualice en vivo (`_advance`).
+
+Así "la distancia que marca el mapa = la que recorre el robot". Sigue por
+dead-reckoning: tras cada tramo se asume que el robot quedó en el waypoint.
+Soporta pausa/reanudación sin saltarse puntos y emite el objetivo actual al
+frontend para resaltarlo en el mapa. Ver constantes de calibración abajo.
+"""
 import asyncio
 import logging
 import math
@@ -25,7 +40,10 @@ HEADING_OFFSET = math.pi / 2
 
 
 class PatrolService:
+    """Ejecuta una ruta de waypoints girando y avanzando tramo a tramo."""
+
     def __init__(self, movement: MovementService, sdk: SDKService):
+        """Guarda los servicios de movimiento y SDK; arranca en estado 'parado'."""
         self.movement = movement
         self.sdk = sdk
         self.is_patrolling = False
@@ -35,6 +53,7 @@ class PatrolService:
         self._wp_index = 0
 
     def get_progress(self) -> float:
+        """Progreso de la patrulla (0.0–1.0) = waypoints completados / total."""
         if not self._route:
             return 0.0
         wps = self._route.get("waypoints", [])
@@ -46,6 +65,8 @@ class PatrolService:
         return self._wp_index if self.is_patrolling else -1
 
     async def start(self, route: dict):
+        """Inicia la patrulla de una ruta (para la anterior si la había) lanzando
+        el bucle `_run` en una tarea aparte."""
         if self.is_patrolling:
             await self.stop()
         self._route = route
@@ -55,12 +76,15 @@ class PatrolService:
         self._task = asyncio.create_task(self._run())
 
     def pause(self):
+        """Pausa la patrulla (el robot se para; NO se salta waypoints al reanudar)."""
         self._paused = True
 
     def resume(self):
+        """Reanuda la patrulla desde donde se pausó."""
         self._paused = False
 
     async def stop(self):
+        """Detiene la patrulla, cancela la tarea del bucle y para el robot."""
         self.is_patrolling = False
         if self._task:
             self._task.cancel()
@@ -71,6 +95,9 @@ class PatrolService:
         await self.movement.stop()
 
     async def _run(self):
+        """Bucle principal: recorre los waypoints en orden (repite si es 'loop'),
+        avisando del objetivo actual y navegando cada tramo. Al terminar (o al ser
+        cancelado) para el robot y avisa al frontend."""
         wps = self._route.get("waypoints", [])
         is_loop = self._route.get("is_loop", False)
 
@@ -136,7 +163,9 @@ class PatrolService:
         await self._advance(dist)                  # 2) avanzar la distancia pedida
 
     async def _turn_to(self, target_heading: float):
-        """Gira en el sitio hasta orientar la IMU al ángulo pedido (lazo cerrado)."""
+        """Gira en el sitio hasta orientar la IMU al ángulo pedido (lazo cerrado).
+        Usa una velocidad proporcional al error, con mínimo para vencer inercia y
+        un tope de tiempo por seguridad. La pausa no consume tiempo."""
         elapsed = 0.0
         while self.is_patrolling and elapsed < TURN_MAX_T:
             if self._paused:
@@ -164,7 +193,8 @@ class PatrolService:
 
     async def _advance(self, dist: float):
         """Avanza recto la distancia pedida por TIEMPO (tiempo = distancia / velocidad).
-        No depende de la odometría: si dices 1 m, avanza ~1 m."""
+        No depende de la odometría: si dices 1 m, avanza ~1 m. La pausa no consume
+        distancia (reanuda donde iba)."""
         total_ticks = max(1, round((dist / FWD_SPEED) / TICK))
         logger.info(f"[PATROL] Avanzando {dist:.2f}m (~{total_ticks * TICK:.1f}s)")
         done = 0

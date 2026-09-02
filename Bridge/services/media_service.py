@@ -1,3 +1,14 @@
+"""
+media_service — captura de foto y grabación de vídeo del directo.
+
+Toma los frames del `camera_service` (`get_last_frame`) y:
+  • Foto  → `capture_photo` guarda un `.jpg`.
+  • Vídeo → `start_recording`/`stop_recording` graban un `.mp4` (codec mp4v).
+
+El bucle de grabación (`_loop`) escribe tantos frames como corresponden al
+tiempo REAL transcurrido, para que el vídeo dure lo mismo que la grabación y no
+salga acelerado. Los archivos se guardan en `Bridge/media/`.
+"""
 import asyncio
 import logging
 import time
@@ -17,6 +28,7 @@ class MediaService:
     """Captura foto y graba vídeo de la cámara en vivo, guardándolos en /media."""
 
     def __init__(self, camera: CameraService):
+        """Crea la carpeta de medios y prepara el estado de grabación (parado)."""
         self.camera = camera
         MEDIA_DIR.mkdir(exist_ok=True)
         self._recording = False
@@ -27,10 +39,13 @@ class MediaService:
 
     @property
     def is_recording(self) -> bool:
+        """True si hay una grabación de vídeo en curso."""
         return self._recording
 
     # ── Foto ──────────────────────────────────────────────────────────────────
     def capture_photo(self):
+        """Guarda el último frame de la cámara como .jpg y devuelve su nombre
+        (o None si aún no hay imagen)."""
         frame = self.camera.get_last_frame()
         if frame is None:
             logger.warning("Foto: no hay frame de cámara todavía")
@@ -42,6 +57,8 @@ class MediaService:
 
     # ── Vídeo ─────────────────────────────────────────────────────────────────
     async def start_recording(self):
+        """Abre un VideoWriter .mp4 con el tamaño del frame actual y lanza el bucle
+        de escritura. Devuelve el nombre del archivo (o None si no hay imagen)."""
         if self._recording:
             return self._current_file
         frame = self.camera.get_last_frame()
@@ -66,6 +83,9 @@ class MediaService:
         return name
 
     async def _loop(self):
+        """Bucle de grabación: escribe los frames que tocan según el tiempo REAL
+        transcurrido, para que el vídeo dure lo mismo que la grabación (si el bucle
+        se retrasa, duplica el frame actual para ponerse al día)."""
         loop = asyncio.get_event_loop()
         interval = 1.0 / FPS
         start = time.monotonic()
@@ -75,9 +95,6 @@ class MediaService:
             if frame is not None and self._writer is not None:
                 if (frame.shape[1], frame.shape[0]) != self._size:
                     frame = cv2.resize(frame, self._size)
-                # Escribir tantos frames como correspondan al tiempo REAL transcurrido,
-                # para que el vídeo dure lo mismo que la grabación → velocidad correcta
-                # (si el bucle se retrasa, duplica el frame actual para ponerse al día).
                 target = int((time.monotonic() - start) * FPS)
                 while written < target:
                     try:
@@ -89,6 +106,7 @@ class MediaService:
             await asyncio.sleep(interval)
 
     async def stop_recording(self):
+        """Detiene el bucle, cierra el archivo y devuelve el nombre del vídeo grabado."""
         if not self._recording:
             return None
         self._recording = False

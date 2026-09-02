@@ -1,3 +1,8 @@
+/**
+ * AudioControls — llamada de audio y volumen.
+ * Botón para iniciar/colgar la llamada (tu micro ↔ robot) y slider de volumen.
+ * Envía CALL_START / CALL_STOP / SET_VOLUME por WebSocket.
+ */
 import { useState } from 'react'
 import { ws } from '../services/websocketService'
 
@@ -5,6 +10,7 @@ export function AudioControls() {
   const [calling, setCalling] = useState(false)
   const [volume, setVolume]   = useState(50)
 
+  // Inicia o cuelga la llamada de audio con el robot
   const toggleCall = () => {
     if (calling) {
       ws.send('CALL_STOP')
@@ -15,6 +21,7 @@ export function AudioControls() {
     }
   }
 
+  // Cambia el volumen del robot (0–100) y lo refleja en el slider
   const onVolume = (v) => {
     setVolume(v)
     ws.send('SET_VOLUME', { level: v })

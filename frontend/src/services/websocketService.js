@@ -1,3 +1,10 @@
+/**
+ * websocketService — cliente WebSocket (singleton `ws`).
+ * Conecta a ws://localhost:8080/ws con reconexión automática. `send(type, payload)`
+ * manda comandos al robot; `_dispatch` vuelca los eventos entrantes al store
+ * (telemetría, batería, patrulla) y avisa a los suscriptores (`on`/`off`),
+ * p. ej. el visor de la nube LiDAR.
+ */
 import { useRobotStore } from '../stores/useRobotStore'
 
 class WebSocketService {
@@ -5,6 +12,7 @@ class WebSocketService {
   reconnectTimer = null
   handlers = []
 
+  /** Abre la conexión WebSocket con el backend. Si se cae, reintenta cada 3 s. */
   connect() {
     if (this.ws?.readyState === WebSocket.OPEN) return
 
@@ -33,6 +41,7 @@ class WebSocketService {
     this.ws.onerror = () => this.ws?.close()
   }
 
+  /** Vuelca un evento entrante del robot al store y avisa a los suscriptores. */
   _dispatch(msg) {
     const store = useRobotStore.getState()
 
@@ -54,14 +63,15 @@ class WebSocketService {
     for (const h of this.handlers) h(msg)
   }
 
+  /** Envía un comando `{type, payload}` al robot (si el socket está abierto). */
   send(type, payload) {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type, payload }))
     }
   }
 
-  on(h)  { if (!this.handlers.includes(h)) this.handlers.push(h) }
-  off(h) { this.handlers = this.handlers.filter(x => x !== h) }
+  on(h)  { if (!this.handlers.includes(h)) this.handlers.push(h) }   // suscribe un handler de eventos (p. ej. LiDAR)
+  off(h) { this.handlers = this.handlers.filter(x => x !== h) }      // da de baja un handler
 }
 
 export const ws = new WebSocketService()

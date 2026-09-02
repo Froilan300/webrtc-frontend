@@ -1,3 +1,8 @@
+/**
+ * PointCloudView — visor 3D de la nube de puntos LiDAR (Three.js).
+ * Reemplaza la nube cada frame con los datos LIDAR_DATA (colores por distancia),
+ * permite rotar/zoom con OrbitControls y exportar el mapa actual a `.ply`.
+ */
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls'
@@ -10,6 +15,8 @@ export function PointCloudView() {
   const [status, setStatus] = useState('waiting')
   const [count, setCount]   = useState(0)
 
+  // Monta la escena Three.js (cámara, luces, controles) y se suscribe a los datos
+  // LiDAR; al desmontar limpia todo (listeners, geometría, renderer).
   useEffect(() => {
     const mount = mountRef.current
     const W = mount.clientWidth  || 960
@@ -44,6 +51,7 @@ export function PointCloudView() {
     scene.add(new THREE.AxesHelper(5))
 
     // ── Animación ───────────────────────────────────────────────────────────
+    // Bucle de render: refresca la escena en cada frame del navegador
     let animId
     const animate = () => {
       animId = requestAnimationFrame(animate)

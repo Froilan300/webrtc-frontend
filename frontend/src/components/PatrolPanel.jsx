@@ -1,3 +1,8 @@
+/**
+ * PatrolPanel — gestión de rutas y control de la patrulla.
+ * Guarda la ruta de waypoints (opción loop), lista/elige/borra rutas guardadas
+ * e inicia/pausa/detiene la patrulla con barra de progreso.
+ */
 import { useEffect, useState } from 'react'
 import { useMapStore } from '../stores/useMapStore'
 import { useRobotStore } from '../stores/useRobotStore'
@@ -11,6 +16,7 @@ export function PatrolPanel() {
   const isRunning = patrolStatus === 'RUNNING'
   const isActive  = patrolStatus === 'RUNNING' || patrolStatus === 'PAUSED'
 
+  // Al montar, carga las rutas guardadas desde el backend
   useEffect(() => {
     fetch('/api/routes')
       .then(r => r.json())
@@ -18,6 +24,7 @@ export function PatrolPanel() {
       .catch(() => {})
   }, [setSavedRoutes])
 
+  // Guarda los waypoints actuales como una ruta nueva y la deja activa
   const saveRoute = async () => {
     if (!name.trim() || waypoints.length === 0) return
     const route = { name, waypoints, is_loop: loop }
@@ -35,6 +42,7 @@ export function PatrolPanel() {
     } catch {}
   }
 
+  // Borra una ruta guardada (y la desactiva si era la activa)
   const deleteRoute = async (id) => {
     try {
       await fetch(`/api/routes/${id}`, { method: 'DELETE' })
@@ -43,6 +51,7 @@ export function PatrolPanel() {
     } catch {}
   }
 
+  // Inicia la patrulla de la ruta activa
   const startPatrol = () => {
     if (!activeRoute) return
     ws.send('START_PATROL', { route_id: activeRoute.id })

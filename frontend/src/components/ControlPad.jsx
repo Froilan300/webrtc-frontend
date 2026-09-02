@@ -1,3 +1,9 @@
+/**
+ * ControlPad — control manual del robot.
+ * Teclado WASD/flechas (Q/E lateral, Shift = turbo) y D-pad en pantalla; envía
+ * comandos MOVE/STOP por WebSocket. Al soltar la tecla o perder el foco para el
+ * robot (frenada limpia). Incluye Stand Up/Down y parada de emergencia.
+ */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ws } from '../services/websocketService'
 
@@ -6,6 +12,7 @@ const TURN  = 1.7   // velocidad de giro (más alto = gira más rápido)
 const BOOST = 1.5   // multiplicador de velocidad al mantener Shift (turbo)
 const ZERO  = { x: 0, y: 0, z: 0 }
 
+// Botón del D-pad: manda su vector al pulsar y para al soltar o salir con el ratón
 function DPadBtn({ label, vec, onDown, onUp }) {
   return (
     <button
@@ -24,6 +31,7 @@ export function ControlPad() {
   const intervalRef   = useRef(null)
   const mountedRef    = useRef(false)
 
+  // Envía el vector de velocidad: si es cero → STOP, si no → MOVE
   const sendVec = useCallback((v) => {
     if (v.x === 0 && v.y === 0 && v.z === 0) {
       ws.send('STOP')
@@ -62,6 +70,8 @@ export function ControlPad() {
     }
   }, [])
 
+  // Cuando cambia el vector, lo envía y, si hay movimiento, lo reenvía cada 100 ms
+  // (el robot necesita comandos Move continuos para seguir andando).
   useEffect(() => {
     if (!mountedRef.current) { mountedRef.current = true; return }
     sendVec(vec)
@@ -72,8 +82,8 @@ export function ControlPad() {
     return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
   }, [vec, sendVec])
 
-  const down = (v) => setVec(v)
-  const up   = ()  => setVec(ZERO)
+  const down = (v) => setVec(v)    // pulsar un botón del D-pad → fija su vector
+  const up   = ()  => setVec(ZERO) // soltar → vector cero (para)
 
   return (
     <div className="space-y-3">

@@ -1,7 +1,13 @@
+/**
+ * CameraView — vídeo en vivo de la cámara del robot.
+ * Muestra el stream MJPEG (`/video`), botones circulares de foto y vídeo (que
+ * descargan el archivo automáticamente) y pantalla completa SOLO de la cámara
+ * (expansión CSS + API nativa del navegador).
+ */
 import { useEffect, useRef, useState } from 'react'
 import { useRobotStore } from '../stores/useRobotStore'
 
-// Icono desde /public con emoji de reserva si la imagen no existe
+// Muestra un icono de /public; si la imagen no carga, cae a un emoji de reserva
 function Icon({ src, fallback }) {
   const [err, setErr] = useState(false)
   if (err) return <span className="text-base leading-none">{fallback}</span>
@@ -35,6 +41,7 @@ export function CameraView() {
     }
   }
 
+  // Hace una foto en el backend y la descarga automáticamente
   const takePhoto = async () => {
     setBusy(true)
     try {
@@ -48,6 +55,7 @@ export function CameraView() {
     }
   }
 
+  // Empieza a grabar o para y descarga el vídeo resultante
   const toggleRecording = async () => {
     setBusy(true)
     try {

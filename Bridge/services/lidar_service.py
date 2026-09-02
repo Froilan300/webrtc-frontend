@@ -1,3 +1,15 @@
+"""
+lidar_service — mapa LiDAR del robot como nube de puntos 3D.
+
+Enciende el LiDAR del Go2, decodifica el mapa voxel (`libvoxel`) y en cada frame:
+rota los puntos como el ejemplo oficial, los deduplica, los autocentra y alinea
+el plano del suelo por PCA (para que la sala se vea como rectángulo y no como
+rombo), y los emite al frontend como `LIDAR_DATA` (puntos + color por distancia).
+
+Prioridad de recursos: se PAUSA durante una llamada de audio (`sdk.call_active`)
+y baja el ritmo mientras conduces (para no robar CPU/ancho de banda al vídeo).
+El procesado pesado corre en un executor para no bloquear el event loop.
+"""
 import asyncio
 import json
 import logging
@@ -88,7 +100,10 @@ def _process_and_serialize(positions):
 
 
 class LidarService:
+    """Enciende/apaga el LiDAR y transforma su mapa voxel en una nube de puntos."""
+
     def __init__(self, sdk: SDKService):
+        """Guarda el SDK y prepara los contadores/estado (LiDAR apagado)."""
         self._sdk         = sdk
         self.is_active    = False
         self._last_emit_t = 0.0
@@ -98,6 +113,8 @@ class LidarService:
         self._busy        = False
 
     async def start(self):
+        """Enciende el LiDAR: desactiva el ahorro de tráfico, fija el decoder
+        `libvoxel`, manda encender el sensor y se suscribe al mapa comprimido."""
         if not self._sdk.is_connected:
             logger.warning("LiDAR: robot no conectado")
             return
@@ -133,6 +150,7 @@ class LidarService:
         pass
 
     def stop(self):
+        """Apaga el LiDAR (manda apagar el sensor) y registra el resumen de frames."""
         if not self.is_active:
             return
         self.is_active = False

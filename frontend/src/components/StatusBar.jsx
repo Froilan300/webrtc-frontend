@@ -1,3 +1,8 @@
+/**
+ * StatusBar — barra superior de estado.
+ * Logo, conexión, batería (con color), modo, posición (X/Y/rumbo) y estado de
+ * patrulla. Lee todo de useRobotStore, que se actualiza con la telemetría.
+ */
 import { useRobotStore } from '../stores/useRobotStore'
 
 const MODE_LABELS = { 0: 'IDLE', 1: 'BALANCEO', 2: 'TROT', 3: 'CRAWL' }
@@ -5,9 +10,11 @@ const MODE_LABELS = { 0: 'IDLE', 1: 'BALANCEO', 2: 'TROT', 3: 'CRAWL' }
 export function StatusBar() {
   const { isConnected, battery, mode, patrolStatus, position } = useRobotStore()
 
+  // Color de la batería según el nivel (verde/amarillo/rojo)
   const battColor =
     battery > 50 ? 'text-green-400' : battery > 20 ? 'text-yellow-400' : 'text-red-400'
 
+  // Color del estado de patrulla (azul=en marcha, amarillo=pausada, gris=parada)
   const patrolColor =
     patrolStatus === 'RUNNING' ? 'text-blue-400' :
     patrolStatus === 'PAUSED'  ? 'text-yellow-400' : 'text-gray-500'
