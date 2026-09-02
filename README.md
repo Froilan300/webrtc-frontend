@@ -1,4 +1,4 @@
-<div align="center">
+
 
 # 🐕 Panel de Control — Unitree Go2
 
@@ -10,9 +10,8 @@ Control manual, patrulla autónoma por waypoints, vídeo en vivo, foto/grabació
 ![Backend](https://img.shields.io/badge/backend-FastAPI-009688)
 ![Frontend](https://img.shields.io/badge/frontend-React%2018-61dafb)
 ![Robot](https://img.shields.io/badge/robot-Unitree%20Go2-orange)
-![Conexión](https://img.shields.io/badge/conexión-WebRTC-blue)w
+![Conexión](https://img.shields.io/badge/conexión-WebRTC-blue)
 
-</div>
 
 ---
 
