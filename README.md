@@ -350,6 +350,6 @@ Por defecto conecta por **LocalAP** (WiFi propia del robot, IP `192.168.12.1`). 
 
 <div align="center">
 
-**Desarrollado para LincEx Robotics** · Unitree Go2 · WebRTC
+**Desarrollado por LincEx Robotics** · Unitree Go2 · WebRTC
 
 </div>
